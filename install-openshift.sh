@@ -13,6 +13,28 @@ export SCRIPT_REPO=${SCRIPT_REPO:="https://raw.githubusercontent.com/gshipley/in
 export IP=${IP:="$(ip route get 8.8.8.8 | awk '{print $NF; exit}')"}
 export API_PORT=${API_PORT:="8443"}
 
+# Add confirm logic 
+confirm () {
+    # call with a prompt string or use a default
+    read -r -p "${1:-Are you sure? [y/N]} " response
+    case $response in
+        [yY][eE][sS]|[yY])
+            true
+            ;;
+        *)
+            false
+            ;;
+    esac
+}
+
+letsencrypt_console() {
+	export LETSENCRYPT_CONSOLE="true"
+}
+
+letsencrypt_router() {
+	export LETSENCRYPT_ROUTER="true"
+}
+
 ## Make the script interactive to set the variables
 if [ "$INTERACTIVE" = "true" ]; then
 	read -rp "Domain to use: ($DOMAIN): " choice;
@@ -44,6 +66,9 @@ if [ "$INTERACTIVE" = "true" ]; then
 		export API_PORT="$choice";
 	fi 
 
+	confirm "Use Let's encrypt wildcard certificate for console and router ? [y/N]" && letsencrypt_console
+	#confirm "Use Let's encrypt certificate for router ( *.apps.$DOMAIN ) ? [y/N]" && letsencrypt_router
+
 	echo
 
 fi
@@ -70,6 +95,13 @@ yum install -y  wget git zile nano net-tools docker-1.13.1\
 
 #install epel
 yum -y install epel-release
+
+# Install certbot if Let's encrypt is selected
+if [ "$LETSENCRYPT_CONSOLE" = "true" ] || [  "$LETSENCRYPT_ROUTER" = "true" ]; then
+    echo "Installing Let's encrypt CertBot" 
+    yum install --enablerepo epel -y certbot 
+fi
+
 
 # Disable the EPEL repository globally so that is not accidentally used during later steps of the installation
 sed -i -e "s/^enabled=1/enabled=0/" /etc/yum.repos.d/epel.repo
@@ -138,7 +170,7 @@ fi
 curl -o inventory.download $SCRIPT_REPO/inventory.ini
 envsubst < inventory.download > inventory.ini
 
-# add proxy in inventory.ini if proxy variables are set
+# Add proxy in inventory.ini if proxy variables are set
 if [ ! -z "${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy}}}}" ]; then
 	echo >> inventory.ini
 	echo "openshift_http_proxy=\"${HTTP_PROXY:-${http_proxy:-${HTTPS_PROXY:-${https_proxy}}}}\"" >> inventory.ini
@@ -151,16 +183,44 @@ if [ ! -z "${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy}}}}" ]; then
 	echo "openshift_no_proxy=\"${__no_proxy}\"" >> inventory.ini
 fi
 
-mkdir -p /etc/origin/master/
-touch /etc/origin/master/htpasswd
+# Add lets encrypt certificates if let's encrypt variables are set
+if [ "$LETSENCRYPT_CONSOLE" = "true" ] || [  "$LETSENCRYPT_ROUTER" = "true" ]; then
 
-ansible-playbook -i inventory.ini openshift-ansible/playbooks/prerequisites.yml
-ansible-playbook -i inventory.ini openshift-ansible/playbooks/deploy_cluster.yml
+CERT_NAME="${DOMAIN}"
 
-htpasswd -b /etc/origin/master/htpasswd ${USERNAME} ${PASSWORD}
-oc adm policy add-cluster-role-to-user cluster-admin ${USERNAME}
+  if [ ! -f /etc/letsencrypt/live/${CERT_NAME}/fullchain.pem ] && [ ! -f /etc/letsencrypt/live/${CERT_NAME}/privkey.pem ]; then
+    yum install -y augeas-libs libffi-devel python-tools python-virtualenv 
 
-if [ "$PVS" = "true" ]; then
+    wget https://dl.eff.org/certbot-auto
+    chmod a+x certbot-auto
+    mv certbot-auto /usr/local/bin/
+	
+    /usr/local/bin/certbot-auto certonly --preferred-challenges dns --manual --cert-name ${CERT_NAME} --server https://acme-v02.api.letsencrypt.org/directory -d "*.${DOMAIN}" -d "*.apps.${DOMAIN}" 
+
+  fi
+
+  echo >> inventory.ini
+  echo "# Let's Encrypt Certificates begin " >> inventory.ini
+  echo "openshift_master_overwrite_named_certificates=true" >> inventory.ini
+  echo "openshift_master_named_certificates=[{\"certfile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem\", \"keyfile\": \"/etc/letsencrypt/live/${CERT_NAME}/privkey.pem\", \"names\": [\"console.${DOMAIN}\"] , \"cafile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem\"}]" >> inventory.ini
+  echo "openshift_hosted_router_certificate={\"certfile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem\", \"keyfile\": \"/etc/letsencrypt/live/${CERT_NAME}/privkey.pem\", \"cafile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem}\" }" >> inventory.ini
+  echo >> "# Let's Encrypt Certificates end " >> inventory.ini
+
+fi
+
+
+run_playbook() { 
+
+  mkdir -p /etc/origin/master/
+  touch /etc/origin/master/htpasswd
+
+  ansible-playbook -i inventory.ini openshift-ansible/playbooks/prerequisites.yml
+  ansible-playbook -i inventory.ini openshift-ansible/playbooks/deploy_cluster.yml
+
+  htpasswd -b /etc/origin/master/htpasswd ${USERNAME} ${PASSWORD}
+  oc adm policy add-cluster-role-to-user cluster-admin ${USERNAME}
+
+  if [ "$PVS" = "true" ]; then
 
 	curl -o vol.yaml $SCRIPT_REPO/vol.yaml
 
@@ -177,16 +237,29 @@ if [ "$PVS" = "true" ]; then
 		echo "created volume $i"
 	done
 	rm oc_vol.yaml
-fi
+  fi
 
-echo "******"
-echo "* Your console is https://console.$DOMAIN:$API_PORT"
-echo "* Your username is $USERNAME "
-echo "* Your password is $PASSWORD "
-echo "*"
-echo "* Login using:"
-echo "*"
-echo "$ oc login -u ${USERNAME} -p ${PASSWORD} https://console.$DOMAIN:$API_PORT/"
-echo "******"
+  echo "******"
+  echo "* Your console is https://console.$DOMAIN:$API_PORT"
+  echo "* Your username is $USERNAME "
+  echo "* Your password is $PASSWORD "
+  echo "*"
+  echo "* Login using:"
+  echo "*"
+  echo "$ oc login -u ${USERNAME} -p ${PASSWORD} https://console.$DOMAIN:$API_PORT/"
+  echo "******"
 
-oc login -u ${USERNAME} -p ${PASSWORD} https://console.$DOMAIN:$API_PORT/
+  oc login -u ${USERNAME} -p ${PASSWORD} https://console.$DOMAIN:$API_PORT/
+} 
+
+# Add option to edit inventory.ini before running. 
+if [ "$INTERACTIVE" = "true" ]; then
+  echo 
+  echo "######################################" 
+  echo 
+  confirm "You can now edit inventory.ini if you need to modify. When you are ready to run the playbook press y to continue ? [y/N]" && run_playbook
+else 
+  run_playbook
+fi 
+
+
