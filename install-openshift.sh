@@ -203,7 +203,7 @@ CERT_NAME="${DOMAIN}"
   echo "# Let's Encrypt Certificates begin " >> inventory.ini
   echo "openshift_master_overwrite_named_certificates=true" >> inventory.ini
   echo "openshift_master_named_certificates=[{\"certfile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem\", \"keyfile\": \"/etc/letsencrypt/live/${CERT_NAME}/privkey.pem\", \"names\": [\"console.${DOMAIN}\"] , \"cafile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem\"}]" >> inventory.ini
-  echo "openshift_hosted_router_certificate={\"certfile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem\", \"keyfile\": \"/etc/letsencrypt/live/${CERT_NAME}/privkey.pem\", \"cafile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem}\" }" >> inventory.ini
+#  echo "openshift_hosted_router_certificate={\"certfile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem\", \"keyfile\": \"/etc/letsencrypt/live/${CERT_NAME}/privkey.pem\", \"cafile\": \"/etc/letsencrypt/live/${CERT_NAME}/fullchain.pem}\" }" >> inventory.ini
   echo >> "# Let's Encrypt Certificates end " >> inventory.ini
 
 fi
